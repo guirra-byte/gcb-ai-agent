@@ -1,0 +1,339 @@
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
+from io import BytesIO
+from typing import Optional, Union, Dict, Any
+import os
+import pandas as pd
+import dotenv
+
+env = dotenv.load_dotenv()
+
+class S3Provider:
+    """
+    A provider class for interacting with Amazon S3.
+    
+    This class provides methods for downloading files from S3 as buffers,
+    uploading files to S3, and reading common file formats (CSV, Parquet)
+    directly into pandas DataFrames.
+    
+    Attributes:
+        s3_client: The boto3 S3 client instance used for AWS operations
+    """
+    
+    def __init__(self, credentials: dict[str, str] = None):
+        """
+        Initialize the S3Provider with a boto3 S3 client.
+        
+        The client will use the default AWS credentials and region configuration
+        from the environment or AWS configuration files.
+        """
+        if credentials is None:
+            credentials = {
+                'aws_access_key_id':os.getenv('AWS_ACCESS_KEY_ID'),
+                'aws_secret_access_key':os.getenv('AWS_SECRET_ACCESS_KEY'),
+                'region_name':os.getenv('AWS_REGION')
+            }
+
+        aws_access_key_id = credentials.get('aws_access_key_id')
+        aws_secret_access_key = credentials.get('aws_secret_access_key')
+        region_name = credentials.get('region_name')
+
+        # # Localstack support
+        # endpoint_url = credentials.get('endpoint_url')
+        # # Normalize empty strings to None (boto3 treats empty endpoint as invalid)
+        # if not endpoint_url:
+        #     endpoint_url = None
+
+        # # Normalize path-style flag: accept truthy strings or default to True when endpoint_url is provided
+        # raw_use_path_style = credentials.get('use_path_style')
+        # if raw_use_path_style is None:
+        #     use_path_style = bool(endpoint_url)
+        # else:
+        #     use_path_style = str(raw_use_path_style).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+        # config: Optional[Config] = None
+        # if use_path_style:
+        #     config = Config(s3={'addressing_style': 'path'})
+
+        try:
+          self.s3_client = boto3.client(
+            's3',
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            region_name=region_name
+          )
+        except Exception as e:
+            raise ValueError(f"Failed to initialize S3 client: {e}")
+
+    def get_object(self, bucket_name: str, key: str) -> Dict[str, Any]:
+        """
+        Get an object from S3 and return the raw response.
+        
+        This method returns the complete S3 object response including metadata,
+        which can be useful when you need access to object properties like
+        content type, size, or custom metadata.
+        
+        Args:
+            bucket_name: The name of the S3 bucket containing the object
+            key: The S3 object key (path) within the bucket
+            
+        Returns:
+            Dict[str, Any]: The complete S3 object response
+            
+        Raises:
+            botocore.exceptions.ClientError: If the object doesn't exist or
+                access is denied
+        """
+        return self.s3_client.get_object(Bucket=bucket_name, Key=key)
+
+    def put_object(self, bucket_name: str, key: str, body: bytes) -> Dict[str, Any]:
+        """
+        Upload bytes data to S3 as an object.
+        
+        This method uploads raw bytes data to S3. The data will be stored
+        as-is without any encoding or compression applied by this method.
+        
+        Args:
+            bucket_name: The name of the S3 bucket to upload to
+            key: The S3 object key (path) where the data will be stored
+            body: The bytes data to upload
+            
+        Returns:
+            Dict[str, Any]: The S3 put object response containing
+                metadata like ETag and version ID
+            
+        Raises:
+            botocore.exceptions.ClientError: If the bucket doesn't exist or
+                access is denied
+        """
+        return self.s3_client.put_object(Bucket=bucket_name, Key=key, Body=body)
+
+    def create_bucket(self, bucket_name: str, region_name: Optional[str] = None) -> dict:
+        """
+        Create an S3 bucket. Handles us-east-1 special case and Localstack.
+
+        If region is us-east-1, AWS does not require CreateBucketConfiguration.
+        For any other region, CreateBucketConfiguration is required.
+        """
+        effective_region = (
+            region_name
+            or getattr(self.s3_client.meta, 'region_name', None)
+            or os.getenv('AWS_DEFAULT_REGION')
+            or 'us-east-1'
+        )
+
+        params: dict[str, Union[str, dict[str, str]]] = {'Bucket': bucket_name}
+        if effective_region != 'us-east-1':
+            params['CreateBucketConfiguration'] = {'LocationConstraint': effective_region}
+        return self.s3_client.create_bucket(**params)
+
+    def ensure_bucket(self, bucket_name: str, region_name: Optional[str] = None) -> None:
+        """
+        Ensure an S3 bucket exists; create it if missing.
+        """
+        try:
+            self.s3_client.head_bucket(Bucket=bucket_name)
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code')
+            # In practice, head_bucket may return 404, 400/301 for region mismatch, or NoSuchBucket
+            if error_code in {'404', 'NoSuchBucket'}:
+                self.create_bucket(bucket_name, region_name=region_name)
+            else:
+                # If it's a different error, re-raise
+                raise
+    
+    def download_file(self, bucket_name: str, key: str) -> BytesIO:
+        """
+        Download a file from S3 and return a BytesIO buffer.
+        
+        This method downloads the complete file content from S3 and returns
+        it as a BytesIO buffer. The buffer is positioned at the beginning
+        and ready for reading. This is useful when you need to work with
+        the file content in memory without saving to disk.
+        
+        Args:
+            bucket_name: The name of the S3 bucket containing the file
+            key: The S3 object key (path) of the file to download
+            
+        Returns:
+            BytesIO: A buffer containing the file content, positioned at
+                the beginning for reading
+            
+        Raises:
+            botocore.exceptions.ClientError: If the file doesn't exist or
+                access is denied
+                
+        Example:
+            >>> buffer = s3_provider.download_file('my-bucket', 'data/file.txt')
+            >>> content = buffer.read().decode('utf-8')
+            >>> buffer.seek(0)  # Reset position for another read
+        """
+        # Get the object from S3
+        response = self.s3_client.get_object(Bucket=bucket_name, Key=key)
+        file_content = response['Body'].read()
+        
+        # Create a BytesIO buffer
+        buffer = BytesIO(file_content)
+        buffer.seek(0)  # Reset position to beginning
+        
+        return buffer
+    
+    def download_file_to_path(self, bucket_name: str, key: str, local_path: str) -> str:
+        """
+        Download a file from S3 to a local file path.
+        
+        This method downloads a file from S3 and saves it to the specified
+        local file path. The directory containing the file will be created
+        if it doesn't exist.
+        
+        Args:
+            bucket_name: The name of the S3 bucket containing the file
+            key: The S3 object key (path) of the file to download
+            local_path: The local file path where the file should be saved
+            
+        Returns:
+            str: The local file path where the file was saved
+            
+        Raises:
+            botocore.exceptions.ClientError: If the file doesn't exist or
+                access is denied
+                
+        Example:
+            >>> s3_provider.download_file_to_path('my-bucket', 'data/file.pdf', '/tmp/file.pdf')
+            '/tmp/file.pdf'
+        """
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(local_path) if os.path.dirname(local_path) else '.', exist_ok=True)
+        
+        # Download file
+        self.s3_client.download_file(bucket_name, key, local_path)
+        
+        return local_path
+    
+    def upload_file_from_path(self, local_path: str, bucket_name: str, key: str, extra_args: Optional[dict] = None) -> str:
+        """
+        Upload a local file to S3.
+        
+        This method uploads a file from the local filesystem to S3.
+        
+        Args:
+            local_path: The local file path to upload
+            bucket_name: The name of the S3 bucket to upload to
+            key: The S3 object key (path) where the file will be stored
+            extra_args: Optional extra arguments for upload (e.g., ContentType, Metadata)
+            
+        Returns:
+            str: The S3 URI of the uploaded file (s3://bucket/key)
+            
+        Raises:
+            FileNotFoundError: If the local file doesn't exist
+            botocore.exceptions.ClientError: If the bucket doesn't exist or
+                access is denied
+                
+        Example:
+            >>> s3_provider.upload_file_from_path('/tmp/file.pdf', 'my-bucket', 'data/file.pdf')
+            's3://my-bucket/data/file.pdf'
+        """
+        if not os.path.exists(local_path):
+            raise FileNotFoundError(f"Local file not found: {local_path}")
+        
+        # Upload file
+        self.s3_client.upload_file(local_path, bucket_name, key, ExtraArgs=extra_args)
+        
+        return f"s3://{bucket_name}/{key}"
+    
+    def upload_bytes(self, data: bytes, bucket_name: str, key: str, content_type: Optional[str] = None) -> str:
+        """
+        Upload bytes data to S3.
+        
+        This method uploads raw bytes data to S3 with optional content type.
+        
+        Args:
+            data: The bytes data to upload
+            bucket_name: The name of the S3 bucket to upload to
+            key: The S3 object key (path) where the data will be stored
+            content_type: Optional content type (e.g., 'image/png', 'application/json')
+            
+        Returns:
+            str: The S3 URI of the uploaded object (s3://bucket/key)
+            
+        Raises:
+            botocore.exceptions.ClientError: If the bucket doesn't exist or
+                access is denied
+                
+        Example:
+            >>> s3_provider.upload_bytes(b'...', 'my-bucket', 'data/file.bin', 'application/octet-stream')
+            's3://my-bucket/data/file.bin'
+        """
+        extra_args = {}
+        if content_type:
+            extra_args['ContentType'] = content_type
+        
+        self.s3_client.put_object(Bucket=bucket_name, Key=key, Body=data, **extra_args)
+        
+        return f"s3://{bucket_name}/{key}"
+    
+    def get_file_as_bytes(self, bucket_name: str, key: str) -> bytes:
+        """
+        Get file content as raw bytes directly from S3.
+        
+        This method is a convenience function that downloads the file content
+        and returns it as raw bytes. Unlike download_file(), this method
+        doesn't create a BytesIO buffer, making it more memory efficient
+        when you only need the bytes data.
+        
+        Args:
+            bucket_name: The name of the S3 bucket containing the file
+            key: The S3 object key (path) of the file to download
+            
+        Returns:
+            bytes: The raw file content as bytes
+            
+        Raises:
+            botocore.exceptions.ClientError: If the file doesn't exist or
+                access is denied
+                
+        Example:
+            >>> file_bytes = s3_provider.get_file_as_bytes('my-bucket', 'data/file.bin')
+            >>> # Process bytes directly
+        """
+        response = self.s3_client.get_object(Bucket=bucket_name, Key=key)
+        return response['Body'].read()
+    
+    def read_parquet_to_df(self, bucket_name: str, key: str, **kwargs) -> pd.DataFrame:
+        """
+        Download a Parquet file from S3 and return it as a pandas DataFrame.
+        
+        This method downloads a Parquet file from S3 and reads it directly into
+        a pandas DataFrame. It performs a file extension check to ensure
+        the file is actually a Parquet file before attempting to read it.
+        
+        Args:
+            bucket_name: The name of the S3 bucket containing the Parquet file
+            key: The S3 object key (path) of the Parquet file (must end with .parquet)
+            **kwargs: Additional arguments to pass to pd.read_parquet(), such as:
+                - columns: List of column names to read
+                - engine: Parquet engine to use ('pyarrow' or 'fastparquet')
+                - dtype: Data types for columns
+                
+        Returns:
+            pd.DataFrame: A pandas DataFrame containing the Parquet data
+            
+        Raises:
+            ValueError: If the file key doesn't end with .parquet
+            botocore.exceptions.ClientError: If the file doesn't exist or
+                access is denied
+            pyarrow.lib.ArrowInvalid: If the Parquet file is corrupted or
+                cannot be read
+                
+        Example:
+            >>> df = s3_provider.read_parquet_to_df('my-bucket', 'data/sales.parquet')
+            >>> df = s3_provider.read_parquet_to_df('my-bucket', 'data/sales.parquet',
+            ...                                     columns=['date', 'amount', 'category'])
+        """
+        if not key.lower().endswith('.parquet'):
+            raise ValueError(f"File key '{key}' does not have a .parquet extension")
+        
+        buffer = self.download_file(bucket_name, key)
+        return pd.read_parquet(buffer, **kwargs)

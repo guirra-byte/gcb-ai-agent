@@ -1,0 +1,44 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+roles/
+
+# Virtual environments
+.venv
+
+# PDF files
+*.pdf
+
+# Environment variables
+.env
+
+# Output
+output/
+
+# Terraform state files
+*.tfstate
+*.tfstate.backup
+
+# Terraform variables files
+infra/environments/dev/*.tfvars
+infra/environments/prod/*.tfvars
+
+# Terraform plan files
+env_dev_tfplan
+
+# Crash logs
+crash.log
+
+# Exclude .terraform directories (providers and modules cache)
+.terraform/
+
+# Lock file (optional: commit if you want consistent provider versions)
+.terraform.lock.hcl
+
+gcb_ai_agent_lambda_function.zip
+

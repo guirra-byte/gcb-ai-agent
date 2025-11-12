@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  gcb-ai-agent:
+    build:
+      context: lambdas
+      dockerfile: Dockerfile
+    image: gcb-ai-agent:latest
+    container_name: gcb-ai-agent
+    
+    # Environment variables
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AWS_REGION=us-east-1
+      # OpenAI API Key (substitua ou use .env)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # AWS Credentials (para desenvolvimento local)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      # S3 Bucket
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-gcb-ai-agent-bucket}
+      # SNS Topic ARN (opcional)
+      - SNS_TOPIC_ARN=${SNS_TOPIC_ARN}
+    
+    # Volumes para desenvolvimento
+    volumes:
+      # Mount do código fonte (para desenvolvimento)
+      - ./lambdas/src:/app:ro
+      # Mount para output
+      - ./output:/app/output
+      # Cache de modelos do docling
+      - docling-cache:/tmp/docling_models
+    
+    # Networking
+    ports:
+      - "8080:8080"  # Se adicionar API REST no futuro
+    
+    # Resource limits (ajuste conforme necessário)
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Restart policy
+    restart: unless-stopped
+
+volumes:
+  docling-cache:
+    driver: local
+
