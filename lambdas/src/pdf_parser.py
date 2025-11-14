@@ -1,7 +1,5 @@
 """PDF parsing module using Docling to extract structured chunks with coordinates."""
 
-from docling.document_converter import DocumentConverter
-
 
 def parse_pdf_to_chunks(pdf_path):
     """
@@ -13,6 +11,9 @@ def parse_pdf_to_chunks(pdf_path):
     Returns:
         List of dictionaries containing text, page, bbox, element_type, and chunk_id
     """
+    # Lazy import to avoid loading heavy ML dependencies during Lambda initialization
+    from docling.document_converter import DocumentConverter
+    
     # convert PDF to DoclingDocument
     converter = DocumentConverter()
     conv_res = converter.convert(source=pdf_path)

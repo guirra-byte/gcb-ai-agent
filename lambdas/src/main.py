@@ -254,6 +254,14 @@ def handler(event, context):
         event: Evento do Lambda contendo mensagens do SQS
         context: Contexto de execução do Lambda
     """
+    # Obter bucket name da variável de ambiente (configuração de infraestrutura)
+    bucket_name = os.environ.get('S3_BUCKET_NAME')
+    if not bucket_name:
+        print(f"❌ Error: S3_BUCKET_NAME environment variable not set")
+        raise ValueError("S3_BUCKET_NAME environment variable is required")
+    
+    print(f"📦 Using S3 bucket: {bucket_name}")
+    
     # Inicializa o S3Provider (usará credenciais do IAM Role do Lambda)
     s3_provider = S3Provider()
     
@@ -263,10 +271,13 @@ def handler(event, context):
             message = json.loads(record['body'])
             file_key = message.get('file_key')
             contract_id = message.get('contract_id')
-            bucket_name = message.get('bucket_name', 'gcb-ai-agent-bucket')
             
             if not file_key:
                 print(f"❌ Error: 'file_key' not found in message: {message}")
+                continue
+            
+            if not contract_id:
+                print(f"❌ Error: 'contract_id' not found in message: {message}")
                 continue
             
             print(f"📥 Processing file: s3://{bucket_name}/{file_key}")
